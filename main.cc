@@ -531,35 +531,29 @@ void RunShuffleTest() {
   const hesm2::PublicKey& pk = sk.GetPublicKey();
   std::vector<hesm2::Ciphertext> ciphers = GenRandomCiphertexts(num_cipher, pk);
   std::cout << "gen random ciphertexts done" << std::endl;
-  hesm2::PrivateKey private_key(ec, kWorldSize);
   auto lctxs = yacl::link::test::SetupWorld(kWorldSize);  // Initialize lctxs
   std::future<std::vector<int32_t>> fut_p1;
   // 其他参与方（P2..Pn）
   std::vector<std::future<void>> futs;
   futs.reserve(kWorldSize - 1);
-
   const size_t cipher_num = ciphers.size();
-
-  // ---- 启动 P1 ----
-
   auto ctx0 = lctxs[0];
   lctxs[0]->SetRecvTimeout(120000);
-  const auto& ki = private_key.GetKi(0);
+  const auto& ki = sk.GetKi(0);
   // const auto& kk = sk.GetK();
-  fut_p1 =
-      std::async(std::launch::async,
-                 [ctx0, &ciphers, ki, ec, pk, sk]() -> std::vector<int32_t> {
-                   return ShuffleAndDecP1(ctx0, ciphers, ki, ec, pk, sk);
-                 });
+  fut_p1 = std::async(std::launch::async,
+                      [ctx0, &ciphers, ki, ec, pk]() -> std::vector<int32_t> {
+                        return ShuffleAndDecP1(ctx0, ciphers, ki, ec, pk);
+                      });
 
   for (size_t i = 1; i < kWorldSize; i++) {
     auto ctxi = lctxs[i];
     lctxs[i]->SetRecvTimeout(120000);
-    const auto& kii = private_key.GetKi(i);
+    const auto& kii = sk.GetKi(i);
 
     futs.emplace_back(
-        std::async(std::launch::async, [ctxi, kii, ec, cipher_num, sk]() {
-          ShuffleAndDecPi(ctxi, kii, ec, cipher_num, sk);
+        std::async(std::launch::async, [ctxi, kii, ec, cipher_num]() {
+          ShuffleAndDecPi(ctxi, kii, ec, cipher_num);
         }));
   }
   for (auto& f : futs) {

@@ -91,7 +91,7 @@ std::vector<int32_t> ShuffleAndDecP1(
     const std::shared_ptr<yacl::link::Context> &ctx,
     std::vector<hesm2::Ciphertext> &ciphertexts, const yacl::math::MPInt &k,
     const std::shared_ptr<yacl::crypto::EcGroup> &ec,
-    const hesm2::PublicKey &pk, const hesm2::PrivateKey &sk) {
+    const hesm2::PublicKey &pk) {
   size_t num_cipher = ciphertexts.size();
   // rerandomize
   size_t partynum = ctx->WorldSize();
@@ -119,19 +119,9 @@ std::vector<int32_t> ShuffleAndDecP1(
   BuffertoCiphertexts(absl::MakeSpan(shuffled_ciphertexts),
                       absl::MakeSpan(buffer), ec);
 
-  // test dec
-  hesm2::DecryptResult test_dec_res =
-      hesm2::Decrypt(shuffled_ciphertexts[0], sk);
-  cout << "test dec res: " << test_dec_res.m
-       << ", success: " << test_dec_res.success << endl;
-
   perm = GenShuffledRangeWithYacl(num_cipher);
   std::vector<hesm2::Ciphertext> newshuffled_ciphertexts(num_cipher);
   newshuffled_ciphertexts = ShuffleWithYacl(shuffled_ciphertexts, perm);
-
-  test_dec_res = hesm2::Decrypt(newshuffled_ciphertexts[0], sk);
-  cout << "test dec res: " << test_dec_res.m
-       << ", success: " << test_dec_res.success << endl;
 
   std::vector<yacl::crypto::EcPoint> c1_points(num_cipher);
   std::vector<yacl::crypto::EcPoint> c2_points(num_cipher);
@@ -145,8 +135,6 @@ std::vector<int32_t> ShuffleAndDecP1(
   size_t total_length_c1 = point_size * num_cipher;
   std::vector<uint8_t> buffer_c1(total_length_c1);
   PointstoBuffer(absl::MakeSpan(c1_points), absl::MakeSpan(buffer_c1), ec);
-
-  cout << ec->GetAffinePoint(c1_points[0]).x << endl;
 
   for (size_t i = 1; i < partynum; i++) {
     ctx->SendAsync(i,
@@ -162,7 +150,6 @@ std::vector<int32_t> ShuffleAndDecP1(
     std::memcpy(c1_skbuffer.data(), revbytes.data(), revbytes.size());
     BuffertoPoints(absl::MakeSpan(c1_points_rev), absl::MakeSpan(c1_skbuffer),
                    ec);
-    cout << ec->GetAffinePoint(c1_points_rev[0]).x << endl;
     yacl::parallel_for(0, num_cipher, [&](size_t begin, size_t end) {
       for (size_t j = begin; j < end; ++j) {
         c2_points[j] = ec->Sub(c2_points[j], c1_points_rev[j]);
@@ -193,7 +180,7 @@ std::vector<int32_t> ShuffleAndDecP1(
 void ShuffleAndDecPi(const std::shared_ptr<yacl::link::Context> &ctx,
                      const yacl::math::MPInt &k,
                      const std::shared_ptr<yacl::crypto::EcGroup> &ec,
-                     size_t cipher_num, const hesm2::PrivateKey &sk) {
+                     size_t cipher_num) {
   // recv
   uint64_t point_size = ec->GetSerializeLength();
   size_t total_length = point_size * 2 * cipher_num;
@@ -203,12 +190,6 @@ void ShuffleAndDecPi(const std::shared_ptr<yacl::link::Context> &ctx,
   std::vector<hesm2::Ciphertext> shuffled_ciphertexts(cipher_num);
   BuffertoCiphertexts(absl::MakeSpan(shuffled_ciphertexts),
                       absl::MakeSpan(buffer), ec);
-
-  // test dec
-  hesm2::DecryptResult test_dec_res =
-      hesm2::Decrypt(shuffled_ciphertexts[0], sk);
-  cout << "test dec res: " << test_dec_res.m
-       << ", success: " << test_dec_res.success << endl;
 
   // shuffle
   std::vector<size_t> perm = GenShuffledRangeWithYacl(cipher_num);
@@ -222,10 +203,6 @@ void ShuffleAndDecPi(const std::shared_ptr<yacl::link::Context> &ctx,
       yacl::ByteContainerView(buffer.data(), buffer.size() * sizeof(uint8_t)),
       "Send descrambled ciphertexts");
 
-  test_dec_res = hesm2::Decrypt(descrambled_ciphertexts[0], sk);
-  cout << "test dec res: " << test_dec_res.m
-       << ", success: " << test_dec_res.success << endl;
-
   size_t total_length_c1 = point_size * cipher_num;
   std::vector<uint8_t> buffer_c1(total_length_c1);
   auto c1bytes = ctx->Recv(0, "Receive c1 points for decryption");
@@ -234,14 +211,11 @@ void ShuffleAndDecPi(const std::shared_ptr<yacl::link::Context> &ctx,
   std::vector<yacl::crypto::EcPoint> c1_points(cipher_num);
   std::vector<yacl::crypto::EcPoint> c1_points_sk(cipher_num);
   BuffertoPoints(absl::MakeSpan(c1_points), absl::MakeSpan(buffer_c1), ec);
-  cout << ec->GetAffinePoint(c1_points[0]).x << endl;
   yacl::parallel_for(0, cipher_num, [&](size_t begin, size_t end) {
     for (size_t i = begin; i < end; ++i) {
       c1_points_sk[i] = ec->Mul(c1_points[i], k);
     }
   });
-  cout << ec->GetAffinePoint(c1_points_sk[0]).x << endl;
-  // send
   PointstoBuffer(absl::MakeSpan(c1_points_sk), absl::MakeSpan(buffer_c1), ec);
   ctx->SendAsync(0,
                  yacl::ByteContainerView(buffer_c1.data(),

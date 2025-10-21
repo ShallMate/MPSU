@@ -22,6 +22,7 @@
 #include "examples/mpsu/opprf.h"
 #include "examples/mpsu/ote.h"
 #include "examples/mpsu/peqt.h"
+#include "examples/mpsu/shffuledec.h"
 #include "yacl/base/int128.h"
 #include "yacl/crypto/rand/rand.h"
 #include "yacl/utils/serialize.h"
@@ -147,13 +148,12 @@ std::vector<int> MOTSend(const std::shared_ptr<yacl::link::Context>& ctx,
   return res;
 }
 
-std::vector<hesm2::Ciphertext> MOTRecv(
-    const std::shared_ptr<yacl::link::Context>& ctx,
-    std::vector<uint128_t>& elem_hashes, okvs::Baxos sendbaxos,
-    okvs::Baxos recvbaxos, size_t cuckoolen,
-    std::shared_ptr<yacl::crypto::EcGroup> ec, uint128_t r,
-    std::vector<uint128_t> t_y, std::vector<uint128_t> rs,
-    std::vector<uint128_t> RS) {
+void MOTRecv(const std::shared_ptr<yacl::link::Context>& ctx,
+             std::vector<uint128_t>& elem_hashes, okvs::Baxos sendbaxos,
+             okvs::Baxos recvbaxos, size_t cuckoolen,
+             const hesm2::PublicKey& public_key, uint128_t r,
+             std::vector<uint128_t> t_y, std::vector<uint128_t> rs,
+             std::vector<uint128_t> RS) {
   std::future<void> opprf_sender = std::async(std::launch::async, [&] {
     opprf::OPPRFSend(ctx, t_y, RS, sendbaxos, recvbaxos);
   });
@@ -171,19 +171,29 @@ std::vector<hesm2::Ciphertext> MOTRecv(
     choose[i] = static_cast<bool>(res[i]);
   }
   std::vector<hesm2::Ciphertext> outputs(cuckoolen);
+  auto ec = public_key.GetEcGroup();
   auto recv_future = std::async(std::launch::async,
                                 [&] { outputs = SM2OTERecv(ctx, choose, ec); });
   recv_future.get();
-
-  return outputs;
+  std::vector<hesm2::Ciphertext> reciphertexts =
+      RerandomizeCiphertextsWithYacl(outputs, public_key);
+  uint64_t point_size = ec->GetSerializeLength();
+  size_t total_length = point_size * 2 * reciphertexts.size();
+  std::vector<uint8_t> buffer(total_length);
+  CiphertextstoBuffer(absl::MakeSpan(reciphertexts), absl::MakeSpan(buffer),
+                      ec);
+  ctx->SendAsync(
+      ctx->NextRank(),
+      yacl::ByteContainerView(buffer.data(), buffer.size() * sizeof(uint8_t)),
+      "Send rerand ciphertexts");
 }
 
-std::vector<int> MOTSend(const std::shared_ptr<yacl::link::Context>& ctx,
-                         const std::vector<int32_t>& items_b_int32,
-                         std::vector<uint128_t>& elem_hashes,
-                         okvs::Baxos sendbaxos, okvs::Baxos recvbaxos,
-                         CuckooHash& t_x, const hesm2::PublicKey& public_key,
-                         uint128_t r) {
+std::vector<hesm2::Ciphertext> MOTSend(
+    const std::shared_ptr<yacl::link::Context>& ctx,
+    const std::vector<int32_t>& items_b_int32,
+    std::vector<uint128_t>& elem_hashes, okvs::Baxos sendbaxos,
+    okvs::Baxos recvbaxos, CuckooHash& t_x, const hesm2::PublicKey& public_key,
+    uint128_t r) {
   size_t cuckoolen = t_x.cuckoolen_;
   std::vector<hesm2::Ciphertext> Random_Ciphertexts =
       GenRandomLargeCiphertexts(t_x.cuckoolen_, public_key);
@@ -216,5 +226,13 @@ std::vector<int> MOTSend(const std::shared_ptr<yacl::link::Context>& ctx,
     SM2OTESend(ctx, ciphers0, ciphers1, public_key.GetEcGroup());
   });
   send_future.get();
-  return res;
+  std::vector<hesm2::Ciphertext> outputs(cuckoolen);
+  auto ec = public_key.GetEcGroup();
+  auto revbytes = ctx->Recv(ctx->PrevRank(), "Receive shuffled messages");
+  uint64_t point_size = ec->GetSerializeLength();
+  size_t total_length = point_size * 2 * cuckoolen;
+  std::vector<uint8_t> buffer(total_length);
+  std::memcpy(buffer.data(), revbytes.data(), revbytes.size());
+  BuffertoCiphertexts(absl::MakeSpan(outputs), absl::MakeSpan(buffer), ec);
+  return outputs;
 }

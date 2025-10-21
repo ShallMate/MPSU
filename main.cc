@@ -527,8 +527,10 @@ int RunMutiSM2Dec() {
 
 void RunShuffleTest() {
   InitializeConfig();
-  size_t num_cipher = 1 << 12;
   const int kWorldSize = 3;
+  size_t logn = 12;
+  const uint64_t n = 1 << logn;
+  size_t num_cipher = static_cast<uint32_t>(n * 1.27) * kWorldSize;
   auto ec_group =
       EcGroupFactory::Instance().Create("sm2", yacl::ArgLib = "openssl");
   if (!ec_group) {
@@ -676,6 +678,112 @@ int RunMOT() {
   return 0;
 }
 
+int RunMOTV2() {
+  InitializeConfig();
+  const int kWorldSize = 5;
+  auto ec_group =
+      EcGroupFactory::Instance().Create("sm2", yacl::ArgLib = "openssl");
+  if (!ec_group) {
+    std::cerr << "Failed to create SM2 curve using OpenSSL" << std::endl;
+    return 0;
+  }
+  std::shared_ptr<yacl::crypto::EcGroup> ec = std::move(ec_group);
+  hesm2::PrivateKey sk(ec, kWorldSize);
+  const hesm2::PublicKey& pk = sk.GetPublicKey();
+
+  size_t logn = 12;
+  const uint64_t ns = 1 << logn;
+  const uint64_t nr = 1 << logn;
+  size_t sender_bin_size = ns;
+  size_t recv_bin_size = nr;
+  size_t weight = 3;
+  size_t ssp = 40;
+  okvs::Baxos sendbaxos;
+  okvs::Baxos recvbaxos;
+  uint32_t cuckoolen = static_cast<uint32_t>(ns * 1.27);
+  // cout << "cuckoo hash table size: " << cuckoolen << endl;
+  CuckooHash T_X(ns);
+  yacl::crypto::Prg<uint128_t> prng(yacl::crypto::FastRandU128());
+
+  uint128_t seed;
+  prng.Fill(absl::MakeSpan(&seed, 1));
+  sendbaxos.Init(3 * nr, sender_bin_size, weight, ssp,
+                 okvs::PaxosParam::DenseType::GF128, seed);
+  recvbaxos.Init(cuckoolen, recv_bin_size, weight, ssp,
+                 okvs::PaxosParam::DenseType::GF128, seed);
+  std::vector<int32_t> items_a_int32 = CreateRangeItemsInt32(ns);
+  std::vector<uint128_t> items_a = CreateRangeItems(0, ns);
+
+  std::vector<int32_t> items_b_int32 = CreateRangeItemsInt32(nr);
+  std::vector<uint128_t> items_b = CreateRangeItems(0, nr);
+
+  auto lctxs = yacl::link::test::SetupWorld(2);  // setup network
+  uint128_t r = yacl::crypto::FastRandU128();
+  lctxs[0]->SetRecvTimeout(120000);
+  lctxs[1]->SetRecvTimeout(120000);
+  std::vector<uint128_t> T_Y(items_a.size() * 3);
+  std::vector<uint128_t> rs = yacl::crypto::RandVec<uint128_t>(cuckoolen);
+  std::vector<uint128_t> RS(items_a.size() * 3);
+  __m128i key_block = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&r));
+  for (size_t idx = 0; idx < items_a.size(); ++idx) {
+    __m128i x_block =
+        _mm_loadu_si128(reinterpret_cast<const __m128i*>(&items_a[idx]));
+    size_t idx1 = idx * 3;
+    uint64_t h = GetHash(1, items_a[idx]) % cuckoolen;
+    T_Y[idx1] = Oracle(1, key_block, x_block);
+    RS[idx1] = rs[h];
+    h = GetHash(2, items_a[idx]) % cuckoolen;
+    T_Y[idx1 + 1] = Oracle(2, key_block, x_block);
+    RS[idx1 + 1] = rs[h];
+    h = GetHash(3, items_a[idx]) % cuckoolen;
+    T_Y[idx1 + 2] = Oracle(3, key_block, x_block);
+    RS[idx1 + 2] = rs[h];
+  }
+  T_X.Insert(items_b, items_b_int32);
+  T_X.Transform(r);
+  std::vector<hesm2::Ciphertext> T_X_ciphertexts(T_X.cuckoolen_);
+  T_X.SM2EncTable(pk, T_X_ciphertexts);
+  auto start_time = std::chrono::high_resolution_clock::now();
+
+  std::future<void> mot_rev = std::async(std::launch::async, [&] {
+    return MOTRecv(lctxs[0], items_a, sendbaxos, recvbaxos, cuckoolen, pk, r,
+                   T_Y, rs, RS);
+  });
+
+  std::future<std::vector<hesm2::Ciphertext>> mot_sender =
+      std::async(std::launch::async, [&] {
+        return MOTSend(lctxs[1], items_b_int32, items_b, sendbaxos, recvbaxos,
+                       T_X, pk, r);
+      });
+
+  mot_rev.get();
+  auto prf_result = mot_sender.get();
+  auto end_time = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double> duration = end_time - start_time;
+  std::cout << "Execution time: " << duration.count() << " seconds"
+            << std::endl;
+  auto bytesToMB = [](size_t bytes) -> double {
+    return static_cast<double>(bytes) / (1024 * 1024);
+  };
+  auto sender_stats = lctxs[0]->GetStats();
+  auto receiver_stats = lctxs[1]->GetStats();
+  std::cout << "Sender sent bytes: "
+            << bytesToMB(sender_stats->sent_bytes.load()) << " MB" << std::endl;
+  std::cout << "Sender received bytes: "
+            << bytesToMB(sender_stats->recv_bytes.load()) << " MB" << std::endl;
+  std::cout << "Receiver sent bytes: "
+            << bytesToMB(receiver_stats->sent_bytes.load()) << " MB"
+            << std::endl;
+  std::cout << "Receiver received bytes: "
+            << bytesToMB(receiver_stats->recv_bytes.load()) << " MB"
+            << std::endl;
+  std::cout << "Total Communication: "
+            << bytesToMB(receiver_stats->sent_bytes.load()) +
+                   bytesToMB(receiver_stats->recv_bytes.load())
+            << " MB" << std::endl;
+  return 0;
+}
+
 void RunMPSU() {
   InitializeConfig();
   size_t n = 1 << 12;
@@ -737,6 +845,7 @@ void RunMPSU() {
 int main() {
   // RunMOT();
   // RunSSRPMT();
-  // RunShuffleTest();
-  RunMPSU();
+  RunShuffleTest();
+  // RunMPSU();
+  // RunMOTV2();
 }

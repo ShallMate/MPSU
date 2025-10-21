@@ -12,18 +12,16 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#pragma once
 
-#include <iostream>
 #include <vector>
 
 #include "examples/mpsu/cuckoohash.h"
-#include "examples/mpsu/okvs/galois128.h"
 #include "examples/mpsu/opprf.h"
 #include "examples/mpsu/peqt.h"
 #include "yacl/base/int128.h"
 #include "yacl/crypto/rand/rand.h"
-#include "yacl/kernel/algorithms/silent_vole.h"
-#include "yacl/utils/parallel.h"
+#include "yacl/utils/serialize.h"
 
 std::vector<int> SSRPMTRecv(const std::shared_ptr<yacl::link::Context>& ctx,
                             std::vector<uint128_t>& elem_hashes,

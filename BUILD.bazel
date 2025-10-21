@@ -26,7 +26,8 @@ spu_cc_binary(
         "ssrpmt.h",
         "peqt.h",
         "ote.h",
-        "shffuledec.h"
+        "shffuledec.h",
+        "mot.h"
     ],
     deps = [
         "//examples/mpsu/okvs:galois128",
@@ -43,5 +44,5 @@ spu_cc_binary(
         "//examples/mpsu/hesm2:homosm2",
         "@com_google_absl//absl/strings",
     ],
-    copts = ["-maes", "-mpclmul"],
+    copts = ["-maes", "-mpclmul","-O3"],
 )

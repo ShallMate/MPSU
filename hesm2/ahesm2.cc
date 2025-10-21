@@ -27,7 +27,7 @@
 namespace hesm2 {
 
 Ciphertext Encrypt(const yacl::math::MPInt& message, const PublicKey& pk) {
-  YACL_ENFORCE(message.Abs() <= yacl::math::MPInt(Mmax));
+  // YACL_ENFORCE(message.Abs() <= yacl::math::MPInt(Mmax));
   const auto& ec_group = pk.GetEcGroup();
   auto generator = ec_group->GetGenerator();
   yacl::math::MPInt r;

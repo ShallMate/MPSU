@@ -5,6 +5,7 @@
 #include "examples/mpsu/hesm2/ahesm2.h"
 #include "examples/mpsu/hesm2/config.h"
 #include "examples/mpsu/hesm2/private_key.h"
+#include "examples/mpsu/mot.h"
 #include "examples/mpsu/okvs/baxos.h"
 #include "examples/mpsu/okvs/galois128.h"
 #include "examples/mpsu/opprf.h"
@@ -28,6 +29,14 @@ std::vector<uint128_t> CreateRangeItems(size_t begin, size_t size) {
   std::vector<uint128_t> ret;
   for (size_t i = 0; i < size; ++i) {
     ret.push_back(yacl::crypto::Blake3_128(std::to_string(begin + i)));
+  }
+  return ret;
+}
+
+std::vector<int32_t> CreateRangeItemsInt32(size_t size) {
+  std::vector<int32_t> ret;
+  for (size_t i = 0; i < size; ++i) {
+    ret.push_back(i);
   }
   return ret;
 }
@@ -518,7 +527,7 @@ int RunMutiSM2Dec() {
 void RunShuffleTest() {
   InitializeConfig();
   size_t num_cipher = 1 << 12;
-  const int kWorldSize = 5;
+  const int kWorldSize = 3;
   auto ec_group =
       EcGroupFactory::Instance().Create("sm2", yacl::ArgLib = "openssl");
   if (!ec_group) {
@@ -572,4 +581,102 @@ void RunShuffleTest() {
             << std::endl;
 }
 
-int main() { RunShuffleTest(); }
+int RunMOT() {
+  InitializeConfig();
+  const int kWorldSize = 5;
+  auto ec_group =
+      EcGroupFactory::Instance().Create("sm2", yacl::ArgLib = "openssl");
+  if (!ec_group) {
+    std::cerr << "Failed to create SM2 curve using OpenSSL" << std::endl;
+    return 0;
+  }
+  std::shared_ptr<yacl::crypto::EcGroup> ec = std::move(ec_group);
+  hesm2::PrivateKey sk(ec, kWorldSize);
+  const hesm2::PublicKey& pk = sk.GetPublicKey();
+
+  size_t logn = 12;
+  const uint64_t ns = 1 << logn;
+  const uint64_t nr = 1 << logn;
+  size_t sender_bin_size = ns;
+  size_t recv_bin_size = nr;
+  size_t weight = 3;
+  size_t ssp = 40;
+  okvs::Baxos sendbaxos;
+  okvs::Baxos recvbaxos;
+  uint32_t cuckoolen = static_cast<uint32_t>(ns * 1.27);
+  cout << "cuckoo hash table size: " << cuckoolen << endl;
+  CuckooHash T_X(ns);
+  yacl::crypto::Prg<uint128_t> prng(yacl::crypto::FastRandU128());
+
+  uint128_t seed;
+  prng.Fill(absl::MakeSpan(&seed, 1));
+  sendbaxos.Init(3 * nr, sender_bin_size, weight, ssp,
+                 okvs::PaxosParam::DenseType::GF128, seed);
+  recvbaxos.Init(cuckoolen, recv_bin_size, weight, ssp,
+                 okvs::PaxosParam::DenseType::GF128, seed);
+  std::vector<int32_t> items_a_int32 = CreateRangeItemsInt32(ns);
+  std::vector<uint128_t> items_a = CreateRangeItems(0, ns);
+
+  std::vector<int32_t> items_b_int32 = CreateRangeItemsInt32(nr);
+  std::vector<uint128_t> items_b = CreateRangeItems(0, nr);
+
+  auto lctxs = yacl::link::test::SetupWorld(2);  // setup network
+  lctxs[0]->SetRecvTimeout(120000);
+  lctxs[1]->SetRecvTimeout(120000);
+
+  auto start_time = std::chrono::high_resolution_clock::now();
+
+  std::future<std::vector<int>> opprf_sender =
+      std::async(std::launch::async, [&] {
+        return MOTRecv(lctxs[0], items_a, sendbaxos, recvbaxos, cuckoolen, ec);
+      });
+
+  std::future<std::vector<int>> opprf_receiver =
+      std::async(std::launch::async, [&] {
+        return MOTSend(lctxs[1], items_b_int32, items_b, sendbaxos, recvbaxos,
+                       T_X, pk);
+      });
+
+  auto prf_result1 = opprf_sender.get();
+  auto prf_result = opprf_receiver.get();
+  auto end_time = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double> duration = end_time - start_time;
+  std::cout << "Execution time: " << duration.count() << " seconds"
+            << std::endl;
+  size_t match_count = 0;
+  for (size_t i = 0; i < cuckoolen; i++) {
+    int res = prf_result1[i] ^ prf_result[i];
+    if (res == 1) {
+      match_count++;
+    }
+    // cout << res << endl;
+  }
+  cout << "match count: " << match_count << endl;
+
+  auto bytesToMB = [](size_t bytes) -> double {
+    return static_cast<double>(bytes) / (1024 * 1024);
+  };
+  auto sender_stats = lctxs[0]->GetStats();
+  auto receiver_stats = lctxs[1]->GetStats();
+  std::cout << "Sender sent bytes: "
+            << bytesToMB(sender_stats->sent_bytes.load()) << " MB" << std::endl;
+  std::cout << "Sender received bytes: "
+            << bytesToMB(sender_stats->recv_bytes.load()) << " MB" << std::endl;
+  std::cout << "Receiver sent bytes: "
+            << bytesToMB(receiver_stats->sent_bytes.load()) << " MB"
+            << std::endl;
+  std::cout << "Receiver received bytes: "
+            << bytesToMB(receiver_stats->recv_bytes.load()) << " MB"
+            << std::endl;
+  std::cout << "Total Communication: "
+            << bytesToMB(receiver_stats->sent_bytes.load()) +
+                   bytesToMB(receiver_stats->recv_bytes.load())
+            << " MB" << std::endl;
+  return 0;
+}
+
+int main() {
+  RunMOT();
+  // RunSSRPMT();
+  // RunShuffleTest();
+}

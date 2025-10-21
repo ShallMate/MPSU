@@ -8,8 +8,12 @@
 #include <cstring>
 #include <vector>
 
+#include "examples/mpsu/hesm2/ahesm2.h"
+#include "examples/mpsu/hesm2/ciphertext.h"
+#include "examples/mpsu/hesm2/public_key.h"
 #include "yacl/base/int128.h"
 #include "yacl/crypto/rand/rand.h"
+#include "yacl/utils/parallel.h"
 
 inline uint64_t GetHash(size_t idx, uint128_t code) {
   uint64_t aligned_u64;
@@ -70,6 +74,39 @@ class CuckooHash {
       }
     }
   }
+
+  void Insert(std::vector<uint128_t> inputs, std::vector<int32_t> input_int32) {
+    if (cuckoosize_ != inputs.size()) {
+      throw std::invalid_argument("cuckoosize must be positive");
+    }
+    hash_index_.resize(cuckoolen_, 0);
+    bins32_.resize(cuckoolen_, 0);
+    for (size_t i = 0; i < cuckoosize_; ++i) {
+      uint8_t old_hash_id = 1;
+      size_t j = 0;
+      for (; j < maxiter_; ++j) {
+        uint64_t h = GetHash(old_hash_id, inputs[i]) % cuckoolen_;
+        uint8_t* hash_id_address = &hash_index_[h];
+        uint128_t* key_index_address = &bins_[h];
+        int32_t* key_index_address_int32 = &bins32_[h];
+        if (*hash_id_address == empty_) {
+          *hash_id_address = old_hash_id;
+          *key_index_address = inputs[i];
+          *key_index_address_int32 = input_int32[i];
+          break;
+        } else {
+          std::swap(inputs[i], *key_index_address);
+          std::swap(input_int32[i], *key_index_address_int32);
+          std::swap(old_hash_id, *hash_id_address);
+          old_hash_id = old_hash_id % 3 + 1;
+        }
+      }
+      if (j == maxiter_) {
+        throw std::runtime_error("insert failed, " + std::to_string(i));
+      }
+    }
+  }
+
   void Transform(uint128_t seed) {
     __m128i key_block =
         _mm_loadu_si128(reinterpret_cast<const __m128i*>(&seed));
@@ -85,8 +122,27 @@ class CuckooHash {
     }
   }
 
+  void SM2EncTable(const hesm2::PublicKey& public_key,
+                   std::vector<hesm2::Ciphertext>& bins_ciphertexts) {
+    auto P = public_key.GetEcGroup()->GetOrder();
+    // std::cout << "get p" << std::endl;
+    yacl::parallel_for(0, cuckoolen_, [&](size_t begin, size_t end) {
+      for (size_t idx = begin; idx < end; ++idx) {
+        if (bins32_[idx] == 0 && hash_index_[idx] == 0) {
+          yacl::math::MPInt m;
+          yacl::math::MPInt::RandomLtN(P, &m);
+          bins_ciphertexts[idx] = hesm2::Encrypt(m, public_key);
+        } else {
+          yacl::math::MPInt m(bins32_[idx]);
+          bins_ciphertexts[idx] = hesm2::Encrypt(m, public_key);
+        }
+      }
+    });
+  }
+
   std::vector<uint128_t> bins_;
   std::vector<uint8_t> hash_index_;
+  std::vector<int32_t> bins32_;
   size_t cuckoosize_;
   uint32_t cuckoolen_;
 

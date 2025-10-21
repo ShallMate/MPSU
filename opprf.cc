@@ -15,7 +15,6 @@
 
 #include "examples/mpsu/opprf.h"
 
-#include <iostream>
 #include <vector>
 
 #include "examples/mpsu/okvs/galois128.h"

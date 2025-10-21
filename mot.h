@@ -112,12 +112,84 @@ std::vector<int> MOTSend(const std::shared_ptr<yacl::link::Context>& ctx,
   t_x.Insert(elem_hashes, std::move(items_b_int32));
   t_x.Transform(r);
   std::vector<hesm2::Ciphertext> T_X_ciphertexts(t_x.cuckoolen_);
+  t_x.SM2EncTable(public_key, T_X_ciphertexts);
   std::vector<hesm2::Ciphertext> Random_Ciphertexts =
       GenRandomLargeCiphertexts(t_x.cuckoolen_, public_key);
   std::vector<hesm2::Ciphertext> Zero_Ciphertexts =
       GenZeroCiphertexts(t_x.cuckoolen_, public_key);
 
-  t_x.SM2EncTable(public_key, T_X_ciphertexts);
+  std::future<std::vector<uint128_t>> opprf_receiver = std::async(
+      std::launch::async,
+      [&] { return opprf::OPPRFRecv(ctx, t_x.bins_, sendbaxos, recvbaxos); });
+  std::vector<uint128_t> prf_result = opprf_receiver.get();
+  std::vector<uint64_t> out(cuckoolen);
+  std::transform(prf_result.begin(), prf_result.end(), out.begin(),
+                 [](uint128_t x) { return static_cast<uint64_t>(x); });
+  std::future<std::vector<int>> fut0 = std::async(std::launch::async, [&] {
+    return RunOnePartyEquality(ctx, out, ctx->Rank());
+  });
+  std::vector<int> res = fut0.get();
+  std::vector<hesm2::Ciphertext> ciphers0(cuckoolen);
+  std::vector<hesm2::Ciphertext> ciphers1(cuckoolen);
+  for (size_t i = 0; i != cuckoolen; ++i) {
+    if (res[i] == 0) {
+      ciphers0[i] = Zero_Ciphertexts[i];
+      ciphers1[i] = Random_Ciphertexts[i];
+    } else {
+      ciphers0[i] = Random_Ciphertexts[i];
+      ciphers1[i] = Zero_Ciphertexts[i];
+    }
+  }
+  auto send_future = std::async(std::launch::async, [&] {
+    SM2OTESend(ctx, ciphers0, ciphers1, public_key.GetEcGroup());
+  });
+  send_future.get();
+  return res;
+}
+
+std::vector<hesm2::Ciphertext> MOTRecv(
+    const std::shared_ptr<yacl::link::Context>& ctx,
+    std::vector<uint128_t>& elem_hashes, okvs::Baxos sendbaxos,
+    okvs::Baxos recvbaxos, size_t cuckoolen,
+    std::shared_ptr<yacl::crypto::EcGroup> ec, uint128_t r,
+    std::vector<uint128_t> t_y, std::vector<uint128_t> rs,
+    std::vector<uint128_t> RS) {
+  std::future<void> opprf_sender = std::async(std::launch::async, [&] {
+    opprf::OPPRFSend(ctx, t_y, RS, sendbaxos, recvbaxos);
+  });
+  opprf_sender.get();
+  std::vector<uint64_t> out(cuckoolen);
+  std::transform(rs.begin(), rs.end(), out.begin(),
+                 [](uint128_t x) { return static_cast<uint64_t>(x); });
+
+  std::future<std::vector<int>> fut1 = std::async(std::launch::async, [&] {
+    return RunOnePartyEquality(ctx, out, ctx->Rank());
+  });
+  std::vector<int> res = fut1.get();
+  auto choose = yacl::dynamic_bitset<>(res.size());
+  for (size_t i = 0; i != res.size(); ++i) {
+    choose[i] = static_cast<bool>(res[i]);
+  }
+  std::vector<hesm2::Ciphertext> outputs(cuckoolen);
+  auto recv_future = std::async(std::launch::async,
+                                [&] { outputs = SM2OTERecv(ctx, choose, ec); });
+  recv_future.get();
+
+  return outputs;
+}
+
+std::vector<int> MOTSend(const std::shared_ptr<yacl::link::Context>& ctx,
+                         const std::vector<int32_t>& items_b_int32,
+                         std::vector<uint128_t>& elem_hashes,
+                         okvs::Baxos sendbaxos, okvs::Baxos recvbaxos,
+                         CuckooHash& t_x, const hesm2::PublicKey& public_key,
+                         uint128_t r) {
+  size_t cuckoolen = t_x.cuckoolen_;
+  std::vector<hesm2::Ciphertext> Random_Ciphertexts =
+      GenRandomLargeCiphertexts(t_x.cuckoolen_, public_key);
+  std::vector<hesm2::Ciphertext> Zero_Ciphertexts =
+      GenZeroCiphertexts(t_x.cuckoolen_, public_key);
+
   std::future<std::vector<uint128_t>> opprf_receiver = std::async(
       std::launch::async,
       [&] { return opprf::OPPRFRecv(ctx, t_x.bins_, sendbaxos, recvbaxos); });

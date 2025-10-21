@@ -27,7 +27,8 @@ spu_cc_binary(
         "peqt.h",
         "ote.h",
         "shffuledec.h",
-        "mot.h"
+        "mot.h",
+        "mpsu.h"
     ],
     deps = [
         "//examples/mpsu/okvs:galois128",

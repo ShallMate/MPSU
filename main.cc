@@ -6,6 +6,7 @@
 #include "examples/mpsu/hesm2/config.h"
 #include "examples/mpsu/hesm2/private_key.h"
 #include "examples/mpsu/mot.h"
+#include "examples/mpsu/mpsu.h"
 #include "examples/mpsu/okvs/baxos.h"
 #include "examples/mpsu/okvs/galois128.h"
 #include "examples/mpsu/opprf.h"
@@ -604,7 +605,7 @@ int RunMOT() {
   okvs::Baxos sendbaxos;
   okvs::Baxos recvbaxos;
   uint32_t cuckoolen = static_cast<uint32_t>(ns * 1.27);
-  cout << "cuckoo hash table size: " << cuckoolen << endl;
+  // cout << "cuckoo hash table size: " << cuckoolen << endl;
   CuckooHash T_X(ns);
   yacl::crypto::Prg<uint128_t> prng(yacl::crypto::FastRandU128());
 
@@ -675,8 +676,67 @@ int RunMOT() {
   return 0;
 }
 
+void RunMPSU() {
+  InitializeConfig();
+  size_t n = 1 << 12;
+  const int kWorldSize = 5;
+  auto ec_group =
+      EcGroupFactory::Instance().Create("sm2", yacl::ArgLib = "openssl");
+  if (!ec_group) {
+    std::cerr << "Failed to create SM2 curve using OpenSSL" << std::endl;
+    return;
+  }
+  std::shared_ptr<yacl::crypto::EcGroup> ec = std::move(ec_group);
+  auto contexts = yacl::link::test::SetupWorld(kWorldSize);
+  hesm2::PrivateKey sk(ec, kWorldSize);
+  const hesm2::PublicKey& pk = sk.GetPublicKey();
+  auto lctxs = yacl::link::test::SetupWorld(kWorldSize);  // Initialize lctxs
+  std::future<std::vector<int32_t>> fut_p1;
+  // 其他参与方（P2..Pn）
+  auto ctx0 = lctxs[0];
+  lctxs[0]->SetRecvTimeout(120000);
+  const auto& ki = sk.GetKi(0);
+  // const auto& kk = sk.GetK();
+  uint128_t r = yacl::crypto::FastRandU128();
+  std::vector<int32_t> items_a_int32 = CreateRangeItemsInt32(n);
+  // 其他参与方（P2..Pn）
+  std::vector<std::future<void>> futs;
+  futs.reserve(kWorldSize - 1);
+  fut_p1 =
+      std::async(std::launch::async,
+                 [ctx0, items_a_int32, ki, pk, r]() -> std::vector<int32_t> {
+                   return MPSUP1(ctx0, items_a_int32, ki, pk, r);
+                 });
+
+  for (size_t i = 1; i < kWorldSize; i++) {
+    auto ctxi = lctxs[i];
+    lctxs[i]->SetRecvTimeout(120000);
+    const auto& kii = sk.GetKi(i);
+
+    futs.emplace_back(
+        std::async(std::launch::async, [ctxi, items_a_int32, kii, pk, r]() {
+          MPSUPi(ctxi, items_a_int32, kii, pk, r);
+        }));
+  }
+  for (auto& f : futs) {
+    f.get();
+  }
+  std::vector<int32_t> messages = fut_p1.get();
+  auto bytesToMB = [](size_t bytes) -> double {
+    return static_cast<double>(bytes) / (1024 * 1024);
+  };
+  auto total_com = 0;
+  for (int i = 0; i < kWorldSize; i++) {
+    auto stats = lctxs[i]->GetStats();
+    total_com += stats->sent_bytes.load();
+  }
+  std::cout << "Total Communication: " << bytesToMB(total_com) << " MB"
+            << std::endl;
+}
+
 int main() {
-  RunMOT();
+  // RunMOT();
   // RunSSRPMT();
   // RunShuffleTest();
+  RunMPSU();
 }

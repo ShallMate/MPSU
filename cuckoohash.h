@@ -38,6 +38,7 @@ inline uint128_t Oracle(size_t idx, __m128i key_block, __m128i y_block) {
 
 class CuckooHash {
  public:
+  CuckooHash() = default;
   explicit CuckooHash(int cuckoosize)
       : cuckoosize_(cuckoosize),
         cuckoolen_(static_cast<uint32_t>(cuckoosize_ * 1.27)) {
@@ -147,6 +148,6 @@ class CuckooHash {
   uint32_t cuckoolen_;
 
  private:
-  const uint8_t empty_ = 0;
-  const size_t maxiter_ = 500;
+  static constexpr uint8_t empty_ = 0;
+  static constexpr size_t maxiter_ = 500;
 };

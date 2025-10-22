@@ -295,7 +295,7 @@ DecryptResult DecryptforInt(
       }
     }
   }
-  SPDLOG_INFO("Decrypt failed. |m| should be <= {}", Mmax);
+  // SPDLOG_INFO("Decrypt failed. |m| should be <= {}", Mmax);
   return {yacl::math::MPInt(0), false};
 }
 

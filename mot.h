@@ -236,3 +236,96 @@ std::vector<hesm2::Ciphertext> MOTSend(
   BuffertoCiphertexts(absl::MakeSpan(outputs), absl::MakeSpan(buffer), ec);
   return outputs;
 }
+
+void MOTRecvWithID(const std::shared_ptr<yacl::link::Context>& ctx,
+                   std::vector<uint128_t>& elem_hashes, okvs::Baxos sendbaxos,
+                   okvs::Baxos recvbaxos, size_t cuckoolen,
+                   const hesm2::PublicKey& public_key, uint128_t r,
+                   std::vector<uint128_t> t_y, std::vector<uint128_t> rs,
+                   std::vector<uint128_t> RS, size_t other_party_id) {
+  std::future<void> opprf_sender = std::async(std::launch::async, [&] {
+    opprf::OPPRFSend(ctx, t_y, RS, sendbaxos, recvbaxos, other_party_id);
+  });
+  opprf_sender.get();
+  std::vector<uint64_t> out(cuckoolen);
+  std::transform(rs.begin(), rs.end(), out.begin(),
+                 [](uint128_t x) { return static_cast<uint64_t>(x); });
+
+  std::future<std::vector<int>> fut1 = std::async(std::launch::async, [&] {
+    return RunOnePartyEquality(ctx, out, ctx->Rank());
+  });
+  std::vector<int> res = fut1.get();
+  auto choose = yacl::dynamic_bitset<>(res.size());
+  for (size_t i = 0; i != res.size(); ++i) {
+    choose[i] = static_cast<bool>(res[i]);
+  }
+  std::vector<hesm2::Ciphertext> outputs(cuckoolen);
+  auto ec = public_key.GetEcGroup();
+  auto recv_future = std::async(std::launch::async, [&] {
+    outputs = SM2OTERecv(ctx, choose, ec, other_party_id);
+  });
+  recv_future.get();
+  std::vector<hesm2::Ciphertext> reciphertexts =
+      RerandomizeCiphertextsWithYacl(outputs, public_key);
+  uint64_t point_size = ec->GetSerializeLength();
+  size_t total_length = point_size * 2 * reciphertexts.size();
+  std::vector<uint8_t> buffer(total_length);
+  CiphertextstoBuffer(absl::MakeSpan(reciphertexts), absl::MakeSpan(buffer),
+                      ec);
+  ctx->SendAsync(
+      other_party_id,
+      yacl::ByteContainerView(buffer.data(), buffer.size() * sizeof(uint8_t)),
+      "Send rerand ciphertexts");
+}
+
+std::vector<hesm2::Ciphertext> MOTSendWithID(
+    const std::shared_ptr<yacl::link::Context>& ctx,
+    const std::vector<int32_t>& items_b_int32,
+    std::vector<uint128_t>& elem_hashes, okvs::Baxos sendbaxos,
+    okvs::Baxos recvbaxos, CuckooHash& t_x, const hesm2::PublicKey& public_key,
+    uint128_t r, size_t other_party_id) {
+  size_t cuckoolen = t_x.cuckoolen_;
+  std::vector<hesm2::Ciphertext> Random_Ciphertexts =
+      GenRandomLargeCiphertexts(t_x.cuckoolen_, public_key);
+  std::vector<hesm2::Ciphertext> Zero_Ciphertexts =
+      GenZeroCiphertexts(t_x.cuckoolen_, public_key);
+
+  std::future<std::vector<uint128_t>> opprf_receiver =
+      std::async(std::launch::async, [&] {
+        return opprf::OPPRFRecv(ctx, t_x.bins_, sendbaxos, recvbaxos,
+                                other_party_id);
+      });
+  std::vector<uint128_t> prf_result = opprf_receiver.get();
+  std::vector<uint64_t> out(cuckoolen);
+  std::transform(prf_result.begin(), prf_result.end(), out.begin(),
+                 [](uint128_t x) { return static_cast<uint64_t>(x); });
+  std::future<std::vector<int>> fut0 = std::async(std::launch::async, [&] {
+    return RunOnePartyEquality(ctx, out, ctx->Rank());
+  });
+  std::vector<int> res = fut0.get();
+  std::vector<hesm2::Ciphertext> ciphers0(cuckoolen);
+  std::vector<hesm2::Ciphertext> ciphers1(cuckoolen);
+  for (size_t i = 0; i != cuckoolen; ++i) {
+    if (res[i] == 0) {
+      ciphers0[i] = Zero_Ciphertexts[i];
+      ciphers1[i] = Random_Ciphertexts[i];
+    } else {
+      ciphers0[i] = Random_Ciphertexts[i];
+      ciphers1[i] = Zero_Ciphertexts[i];
+    }
+  }
+  auto send_future = std::async(std::launch::async, [&] {
+    SM2OTESend(ctx, ciphers0, ciphers1, public_key.GetEcGroup(),
+               other_party_id);
+  });
+  send_future.get();
+  std::vector<hesm2::Ciphertext> outputs(cuckoolen);
+  auto ec = public_key.GetEcGroup();
+  auto revbytes = ctx->Recv(other_party_id, "Receive shuffled messages");
+  uint64_t point_size = ec->GetSerializeLength();
+  size_t total_length = point_size * 2 * cuckoolen;
+  std::vector<uint8_t> buffer(total_length);
+  std::memcpy(buffer.data(), revbytes.data(), revbytes.size());
+  BuffertoCiphertexts(absl::MakeSpan(outputs), absl::MakeSpan(buffer), ec);
+  return outputs;
+}

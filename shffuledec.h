@@ -165,16 +165,23 @@ std::vector<int32_t> ShuffleAndDecP1(
   });
   // decrypt
   std::vector<int32_t> messages(num_cipher);
+  std::vector<bool> decres(num_cipher);
   yacl::parallel_for(0, num_cipher, [&](size_t begin, size_t end) {
     for (size_t i = begin; i < end; ++i) {
       hesm2::DecryptResult dec_res =
           hesm2::DecryptforInt(final_ciphertexts[i], ec, k);
-      YACL_ENFORCE(dec_res.success, "Decryption failed at index {}", i);
+      // YACL_ENFORCE(dec_res.success, "Decryption failed at index {}", i);
       messages[i] = dec_res.m.Get<int32_t>();
+      decres[i] = dec_res.success;
     }
   });
-
-  return messages;
+  std::vector<int32_t> decmessages;
+  for (size_t i = 0; i < num_cipher; i++) {
+    if (decres[i]) {
+      decmessages.push_back(messages[i]);
+    }
+  }
+  return decmessages;
 }
 
 void ShuffleAndDecPi(const std::shared_ptr<yacl::link::Context> &ctx,
@@ -221,4 +228,39 @@ void ShuffleAndDecPi(const std::shared_ptr<yacl::link::Context> &ctx,
                  yacl::ByteContainerView(buffer_c1.data(),
                                          buffer_c1.size() * sizeof(uint8_t)),
                  "Send decrypted c1 points");
+}
+
+std::vector<hesm2::Ciphertext> GetAllCiphersP1(
+    const std::shared_ptr<yacl::link::Context> &ctx,
+    const std::shared_ptr<yacl::crypto::EcGroup> &ec, size_t ciphernum) {
+  size_t partynum = ctx->WorldSize();
+  uint64_t point_size = ec->GetSerializeLength();
+  size_t total_length = point_size * 2 * ciphernum;
+  std::vector<uint8_t> buffer(total_length);
+  std::vector<hesm2::Ciphertext> allciphers;
+  for (size_t i = 1; i < partynum; i++) {
+    auto revbytes = ctx->Recv(i, "Receive ciphers");
+    std::vector<hesm2::Ciphertext> ciphertexts(ciphernum);
+    std::memcpy(buffer.data(), revbytes.data(), revbytes.size());
+    BuffertoCiphertexts(absl::MakeSpan(ciphertexts), absl::MakeSpan(buffer),
+                        ec);
+    allciphers.reserve(allciphers.size() + ciphernum);
+    allciphers.insert(allciphers.end(), ciphertexts.begin(), ciphertexts.end());
+  }
+  return allciphers;
+}
+
+void GetAllCiphersPi(const std::shared_ptr<yacl::link::Context> &ctx,
+                     const std::shared_ptr<yacl::crypto::EcGroup> &ec,
+                     std::vector<hesm2::Ciphertext> ciphers) {
+  // recv
+  uint64_t point_size = ec->GetSerializeLength();
+  size_t total_length = point_size * 2 * ciphers.size();
+  std::vector<uint8_t> buffer(total_length);
+  CiphertextstoBuffer(absl::MakeSpan(ciphers), absl::MakeSpan(buffer), ec);
+
+  ctx->SendAsync(
+      0,
+      yacl::ByteContainerView(buffer.data(), buffer.size() * sizeof(uint8_t)),
+      "Send ciphers");
 }

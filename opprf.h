@@ -29,4 +29,14 @@ void OPPRFSend(const std::shared_ptr<yacl::link::Context>& ctx,
                std::vector<uint128_t>& elem_hashes1, okvs::Baxos sendbaxos,
                okvs::Baxos recvbaxos);
 
+std::vector<uint128_t> OPPRFRecv(
+    const std::shared_ptr<yacl::link::Context>& ctx,
+    std::vector<uint128_t>& elem_hashes, okvs::Baxos sendbaxos,
+    okvs::Baxos recvbaxos, size_t other_party_id);
+
+void OPPRFSend(const std::shared_ptr<yacl::link::Context>& ctx,
+               std::vector<uint128_t>& elem_hashes,
+               std::vector<uint128_t>& elem_hashes1, okvs::Baxos sendbaxos,
+               okvs::Baxos recvbaxos, size_t other_party_id);
+
 }  // namespace opprf

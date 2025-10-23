@@ -237,6 +237,52 @@ std::vector<hesm2::Ciphertext> MOTSend(
   return outputs;
 }
 
+std::vector<hesm2::Ciphertext> MOTSend(
+    const std::shared_ptr<yacl::link::Context>& ctx,
+    const std::vector<int32_t>& items_b_int32,
+    std::vector<uint128_t>& elem_hashes, okvs::Baxos sendbaxos,
+    okvs::Baxos recvbaxos, CuckooHash& t_x, const hesm2::PublicKey& public_key,
+    uint128_t r, std::vector<hesm2::Ciphertext> random_ciphertexts,
+    std::vector<hesm2::Ciphertext> zero_ciphertexts) {
+  size_t cuckoolen = t_x.cuckoolen_;
+
+  std::future<std::vector<uint128_t>> opprf_receiver = std::async(
+      std::launch::async,
+      [&] { return opprf::OPPRFRecv(ctx, t_x.bins_, sendbaxos, recvbaxos); });
+  std::vector<uint128_t> prf_result = opprf_receiver.get();
+  std::vector<uint64_t> out(cuckoolen);
+  std::transform(prf_result.begin(), prf_result.end(), out.begin(),
+                 [](uint128_t x) { return static_cast<uint64_t>(x); });
+  std::future<std::vector<int>> fut0 = std::async(std::launch::async, [&] {
+    return RunOnePartyEquality(ctx, out, ctx->Rank());
+  });
+  std::vector<int> res = fut0.get();
+  std::vector<hesm2::Ciphertext> ciphers0(cuckoolen);
+  std::vector<hesm2::Ciphertext> ciphers1(cuckoolen);
+  for (size_t i = 0; i != cuckoolen; ++i) {
+    if (res[i] == 0) {
+      ciphers0[i] = zero_ciphertexts[i];
+      ciphers1[i] = random_ciphertexts[i];
+    } else {
+      ciphers0[i] = random_ciphertexts[i];
+      ciphers1[i] = zero_ciphertexts[i];
+    }
+  }
+  auto send_future = std::async(std::launch::async, [&] {
+    SM2OTESend(ctx, ciphers0, ciphers1, public_key.GetEcGroup());
+  });
+  send_future.get();
+  std::vector<hesm2::Ciphertext> outputs(cuckoolen);
+  auto ec = public_key.GetEcGroup();
+  auto revbytes = ctx->Recv(ctx->PrevRank(), "Receive shuffled messages");
+  uint64_t point_size = ec->GetSerializeLength();
+  size_t total_length = point_size * 2 * cuckoolen;
+  std::vector<uint8_t> buffer(total_length);
+  std::memcpy(buffer.data(), revbytes.data(), revbytes.size());
+  BuffertoCiphertexts(absl::MakeSpan(outputs), absl::MakeSpan(buffer), ec);
+  return outputs;
+}
+
 void MOTRecvWithID(const std::shared_ptr<yacl::link::Context>& ctx,
                    std::vector<uint128_t>& elem_hashes, okvs::Baxos sendbaxos,
                    okvs::Baxos recvbaxos, size_t cuckoolen,

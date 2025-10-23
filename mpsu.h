@@ -49,7 +49,7 @@ void MPSU() {
   const int kWorldSize = 3;
   std::cout << "MPSU test with n = " << n << ", parties = " << kWorldSize
             << std::endl;
-  std::cout << "Expected number of union elements: " << n + kWorldSize - 1
+  std::cout << "Expected number of union elements: " << n * kWorldSize
             << std::endl;
 
   std::cout << "Generating SM2 curve" << std::endl;
@@ -71,7 +71,8 @@ void MPSU() {
   for (int i = 0; i < kWorldSize; i++) {
     inputs[i].resize(n);
     inputs_uint128[i].resize(n);
-    inputs[i] = CreateRangeItemsInt32(i, n);
+    size_t start = i * n;
+    inputs[i] = CreateRangeItemsInt32(start, n);
     inputs_uint128[i] = GetInputsHash(inputs[i]);
   }
   size_t sender_bin_size = n;
@@ -124,8 +125,29 @@ void MPSU() {
   uint64_t point_size = ec->GetSerializeLength();
   size_t total_length = point_size * 2 * cuckoolen;
   std::vector<uint8_t> buffer(total_length);
-  // auto start_time = std::chrono::high_resolution_clock::now();
+  // size_t motnum = n * (n - 1) / 2;
 
+  std::cout << "Protocol setup started..." << std::endl;
+  std::cout << "Please wait for all parties to execute the offline phase..."
+            << std::endl;
+  /*
+  std::vector<std::vector<hesm2::Ciphertext>> Random_Ciphertextss(motnum);
+  std::vector<std::vector<hesm2::Ciphertext>> Zero_Ciphertextss(motnum);
+
+  yacl::parallel_for(0, motnum, [&](size_t begin, size_t end) {
+    for (size_t idx = begin; idx < end; ++idx) {
+      Random_Ciphertextss[idx] = GenRandomLargeCiphertexts(cuckoolen, pk);
+      Zero_Ciphertextss[idx] = GenZeroCiphertexts(cuckoolen, pk);
+    }
+  });
+  */
+  auto Random_Ciphertexts = GenRandomLargeCiphertexts(cuckoolen, pk);
+  auto Zero_Ciphertexts = GenZeroCiphertexts(cuckoolen, pk);
+
+  auto start_time = std::chrono::high_resolution_clock::now();
+  std::cout << "Protocol started" << std::endl;
+  std::cout << "Starting MOT between each pair of parties" << std::endl;
+  // int mot_index = 0;
   for (size_t i = 0; i < kWorldSize; i++) {
     for (size_t j = i + 1; j < kWorldSize; j++) {
       // std::cout << "Party " << i << " and Party " << j << std::endl;
@@ -145,7 +167,8 @@ void MPSU() {
       std::future<std::vector<hesm2::Ciphertext>> mot_sender =
           std::async(std::launch::async, [&] {
             return MOTSend(lctxs[1], inputs[j], inputs_uint128[j], sendbaxos,
-                           recvbaxos, T_xs[j], pk, r);
+                           recvbaxos, T_xs[j], pk, r, Random_Ciphertexts,
+                           Zero_Ciphertexts);
           });
 
       mot_rev.get();
@@ -156,6 +179,7 @@ void MPSU() {
               hesm2::HAdd(T_X_ciphertextss[j][idx], prf_result[idx], pk);
         }
       });
+      // mot_index++;
     }
   }
   size_t com = lctxs[0]->GetStats()->sent_bytes.load() +
@@ -211,10 +235,10 @@ void MPSU() {
     f.get();
   }
   std::vector<int32_t> messages = fut_p1.get();
-  // auto end_time = std::chrono::high_resolution_clock::now();
-  // std::chrono::duration<double> duration = end_time - start_time;
-  // std::cout << "Execution time: " << duration.count() << " seconds"
-  //<< std::endl;
+  auto end_time = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double> duration = end_time - start_time;
+  std::cout << "Execution time: " << duration.count() << " seconds"
+            << std::endl;
   std::unordered_set<int32_t> seen(inputs[0].begin(), inputs[0].end());
   for (auto& x : messages) {
     seen.insert(x);

@@ -535,10 +535,10 @@ int RunMutiSM2Dec() {
 
 void RunShuffleTest() {
   InitializeConfig();
-  const int kWorldSize = 3;
+  const int kWorldSize = 6;
   size_t logn = 12;
   const uint64_t n = 1 << logn;
-  size_t num_cipher = static_cast<uint32_t>(n * 1.27) * kWorldSize;
+  size_t num_cipher = n;
   auto ec_group =
       EcGroupFactory::Instance().Create("sm2", yacl::ArgLib = "openssl");
   if (!ec_group) {
@@ -561,6 +561,7 @@ void RunShuffleTest() {
   lctxs[0]->SetRecvTimeout(120000);
   const auto& ki = sk.GetKi(0);
   // const auto& kk = sk.GetK();
+  auto start_time = std::chrono::high_resolution_clock::now();
   fut_p1 = std::async(std::launch::async,
                       [ctx0, &ciphers, ki, ec, pk]() -> std::vector<int32_t> {
                         return ShuffleAndDecP1(ctx0, ciphers, ki, ec, pk);
@@ -580,6 +581,10 @@ void RunShuffleTest() {
     f.get();
   }
   std::vector<int32_t> messages = fut_p1.get();
+  auto end_time = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double> duration = end_time - start_time;
+  std::cout << "Execution time: " << duration.count() << " seconds"
+            << std::endl;
   auto bytesToMB = [](size_t bytes) -> double {
     return static_cast<double>(bytes) / (1024 * 1024);
   };
@@ -688,7 +693,7 @@ int RunMOT() {
 
 int RunMOTV2() {
   InitializeConfig();
-  const int kWorldSize = 5;
+  const int kWorldSize = 2;
   auto ec_group =
       EcGroupFactory::Instance().Create("sm2", yacl::ArgLib = "openssl");
   if (!ec_group) {
@@ -699,7 +704,7 @@ int RunMOTV2() {
   hesm2::PrivateKey sk(ec, kWorldSize);
   const hesm2::PublicKey& pk = sk.GetPublicKey();
 
-  size_t logn = 12;
+  size_t logn = 16;
   const uint64_t ns = 1 << logn;
   const uint64_t nr = 1 << logn;
   size_t sender_bin_size = ns;
@@ -751,6 +756,10 @@ int RunMOTV2() {
   T_X.Transform(r);
   std::vector<hesm2::Ciphertext> T_X_ciphertexts(T_X.cuckoolen_);
   T_X.SM2EncTable(pk, T_X_ciphertexts);
+  std::vector<hesm2::Ciphertext> Random_Ciphertexts =
+      GenRandomLargeCiphertexts(T_X.cuckoolen_, pk);
+  std::vector<hesm2::Ciphertext> Zero_Ciphertexts =
+      GenZeroCiphertexts(T_X.cuckoolen_, pk);
   auto start_time = std::chrono::high_resolution_clock::now();
 
   std::future<void> mot_rev = std::async(std::launch::async, [&] {
@@ -761,7 +770,7 @@ int RunMOTV2() {
   std::future<std::vector<hesm2::Ciphertext>> mot_sender =
       std::async(std::launch::async, [&] {
         return MOTSend(lctxs[1], items_b_int32, items_b, sendbaxos, recvbaxos,
-                       T_X, pk, r);
+                       T_X, pk, r, Random_Ciphertexts, Zero_Ciphertexts);
       });
 
   mot_rev.get();
